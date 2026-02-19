@@ -1,0 +1,17 @@
+# local user data
+user_foods.csv
+*.json
+
+# python junk
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# streamlit
+.streamlit/secrets.toml
+
+# OS/editor
+.DS_Store
+.vscode/
