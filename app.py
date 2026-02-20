@@ -6,11 +6,27 @@ import difflib
 
 st.set_page_config(page_title="Macro Satiety Optimizer (MVP)", layout="centered")
 
+import json
+from pathlib import Path
+
+MEALS_PATH = Path("meals.json")
+
+def load_meals() -> dict:
+    if not MEALS_PATH.exists():
+        return {}
+    try:
+        return json.loads(MEALS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def save_meals(meals: dict) -> None:
+    MEALS_PATH.write_text(json.dumps(meals, indent=2), encoding="utf-8")
+
 def require_password():
     password = st.secrets.get("APP_PASSWORD")
 
     if not password:
-        return
+      return
 
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
@@ -343,7 +359,34 @@ def find_swaps(
         "swaps": candidates.head(top_n)
     }
 
+def item_to_grams(df: pd.DataFrame, food: str, amount, unit) -> float:
+    # Defaults
+    if unit not in ("grams", "servings"):
+        unit = "grams"
+    try:
+        amount = float(amount)
+    except Exception:
+        amount = 0.0
 
+    if amount <= 0:
+        return 0.0
+
+    # Guard: food must exist
+    match = df.loc[df["food"] == food]
+    if match.empty:
+        return 0.0
+
+    serving_g = float(match.iloc[0]["typical_serving_g"])
+    return amount * serving_g if unit == "servings" else amount
+
+def meal_totals(df: pd.DataFrame, items: list[dict]) -> dict:
+    tot = {"kcal":0.0,"p":0.0,"c":0.0,"f":0.0,"fibre":0.0}
+    for it in items:
+        g = item_to_grams(df, it["food"], it["amount"], it["unit"])
+        row = df.loc[df["food"] == it["food"]].iloc[0]
+        kcal, p, c, f, fibre = macros_for_grams(row, g)
+        tot["kcal"] += kcal; tot["p"] += p; tot["c"] += c; tot["f"] += f; tot["fibre"] += fibre
+    return tot
 # ----------------------------
 # UI
 # ----------------------------
@@ -457,7 +500,28 @@ the app won't suggest more than 1000g.
         help="How many swap options to display."
     )
 
+# If a meal is loaded, allow picking which item to optimise
+if st.session_state.get("meal_items"):
+    st.subheader("Quick load from meal")
+    meal_df = pd.DataFrame(st.session_state.meal_items)
+    pick_idx = st.selectbox(
+        "Pick an item to optimise",
+        options=list(range(len(meal_df))),
+        format_func=lambda i: f"{meal_df.loc[i,'food']} ({meal_df.loc[i,'amount']} {meal_df.loc[i,'unit']})"
+    )
 
+    picked = st.session_state.meal_items[pick_idx]
+    # Pre-fill your main inputs
+    food = picked["food"]
+    if picked["unit"] == "servings":
+        # your UI already supports servings; set defaults
+        input_mode = "Servings"
+        servings = float(picked["amount"])
+        grams = item_to_grams(df, food, servings, "servings")
+    else:
+        input_mode = "Grams"
+        grams = float(picked["amount"])
+        servings = grams / float(df.loc[df["food"]==food].iloc[0]["typical_serving_g"])
 st.subheader("1) Choose what you're currently eating")
 
 col1, col2 = st.columns([2, 1])
@@ -610,6 +674,90 @@ if st.button("Suggest higher-satiety swaps"):
             "Satiety score is an MVP proxy (protein + fibre per calorie, penalised by calorie density). "
             "‘Macro drift’ shows how far the other macros move at calorie-matched portions."
         )
+
+with st.sidebar:
+    st.divider()
+    with st.expander("🍽️ Saved meals", expanded=False):
+        meals = load_meals()
+
+        meal_names = ["(none)"] + sorted(meals.keys())
+        selected_meal = st.selectbox("Load a meal", meal_names, key="selected_meal")
+
+        # Initialise session meal state
+        if "meal_items" not in st.session_state:
+            st.session_state.meal_items = []
+
+        if selected_meal != "(none)":
+            if st.button("Load meal"):
+                st.session_state.meal_items = meals[selected_meal]
+                st.success(f"Loaded: {selected_meal}")
+
+        # Editor for current meal items
+        st.markdown("**Current meal items**")
+        if not st.session_state.meal_items:
+            st.info("No items yet – add some below.")
+            editor_df = pd.DataFrame(columns=["food","amount","unit"])
+            editor_df.loc[0] = [foods_list[0], 1.0, "servings"]
+        else:
+            editor_df = pd.DataFrame(st.session_state.meal_items)
+
+        foods_list = sorted(df["food"].unique())
+        edited = st.data_editor(
+            editor_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "food": st.column_config.SelectboxColumn("food", options=foods_list),
+                "amount": st.column_config.NumberColumn("amount", min_value=0.0, step=0.5),
+                "unit": st.column_config.SelectboxColumn("unit", options=["grams","servings"]),
+            },
+            key="meal_editor"
+        )
+
+        # Keep session state in sync
+        clean = edited.copy()
+        clean = clean.dropna(subset=["food"])                 # must have food
+        clean["unit"] = clean["unit"].fillna("grams")         # default unit
+        clean["amount"] = pd.to_numeric(clean["amount"], errors="coerce").fillna(0.0)
+        clean = clean[clean["amount"] > 0]                    # ignore zero/blank amounts
+        clean = clean[clean["unit"].isin(["grams", "servings"])]
+        
+        st.session_state.meal_items = clean.to_dict("records")
+
+        # Show meal totals
+        if st.session_state.meal_items:
+            totals = meal_totals(df, st.session_state.meal_items)
+            st.markdown(
+                f"**Meal totals:** {totals['kcal']:.0f} kcal  \n"
+                f"P {totals['p']:.1f}g • C {totals['c']:.1f}g • F {totals['f']:.1f}g • Fibre {totals['fibre']:.1f}g"
+            )
+
+        st.divider()
+
+        # Save / delete
+        save_name = st.text_input("Meal name to save", value="" if selected_meal=="(none)" else selected_meal)
+
+        colA, colB = st.columns(2)
+        with colA:
+            if st.button("Save meal"):
+                if not save_name.strip():
+                    st.error("Enter a meal name.")
+                elif not st.session_state.meal_items:
+                    st.error("Add at least one item.")
+                else:
+                    meals[save_name.strip()] = st.session_state.meal_items
+                    save_meals(meals)
+                    st.success("Saved.")
+                    st.rerun()
+
+        with colB:
+            if selected_meal != "(none)" and st.button("Delete meal"):
+                meals.pop(selected_meal, None)
+                save_meals(meals)
+                st.session_state.meal_items = []
+                st.success("Deleted.")
+                st.rerun()
+
 
 with st.sidebar:
     st.divider()
