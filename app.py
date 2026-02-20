@@ -7,15 +7,27 @@ import difflib
 st.set_page_config(page_title="Macro Satiety Optimizer (MVP)", layout="centered")
 
 def require_password():
-    pw = st.secrets.get("APP_PASSWORD", "")
-    if not pw:
-        return  # no password set -> no gate
+    password = st.secrets.get("APP_PASSWORD")
 
-    st.sidebar.markdown("### Login")
-    entered = st.sidebar.text_input("Password", type="password")
+    if not password:
+        return
 
-    if entered != pw:
-        st.warning("Enter password to use the app.")
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+
+    if not st.session_state.authenticated:
+        st.markdown("## 🔐 Macro Volume Prioritiser")
+        st.markdown("Enter password to continue")
+
+        entered = st.text_input("Password", type="password")
+
+        if st.button("Login"):
+            if entered == password:
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("Incorrect password")
+
         st.stop()
 
 require_password()
