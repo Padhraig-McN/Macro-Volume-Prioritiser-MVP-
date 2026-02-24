@@ -340,7 +340,7 @@ def find_swaps(
     candidates = df.copy()
     candidates["satiety_score"] = candidates.apply(satiety_score_row, axis=1)
 
-        # ---- Remove duplicates + exclude the chosen food (robust to case/whitespace) ----
+    # ---- Remove duplicates + exclude the chosen food (robust to case/whitespace) ----
     candidates["food_norm"] = candidates["food"].apply(norm_food_name)
     chosen_norm = norm_food_name(chosen_food)
 
@@ -510,16 +510,19 @@ st.title("Macro Volume Prioritiser (MVP)")
 st.caption("Help swap calorie-dense, low volume foods for higher-volume, more filling alternatives while staying close on calories/macros.")
 
 # Load foods
+# Load foods
 base_df = load_foods()
 user_df = load_user_foods()
 
-if user_df is not None and not user_df.empty:
-    merged = pd.concat([base_df, user_df], ignore_index=True)
-    merged["food_norm"] = merged["food"].apply(norm_food_name)
-    merged = merged.drop_duplicates(subset=["food_norm"], keep="first").drop(columns=["food_norm"])
-    df = merged
-else:
-    df = base_df
+# Session-only optimistic additions (instant dropdown)
+live_df = st.session_state.get("user_foods_live", pd.DataFrame())
+if live_df is not None and not live_df.empty:
+    user_df = pd.concat([user_df, live_df], ignore_index=True)
+
+# Merge + de-dupe (robust)
+merged = pd.concat([base_df, user_df], ignore_index=True)
+merged["food_norm"] = merged["food"].apply(norm_food_name)
+df = merged.drop_duplicates(subset=["food_norm"], keep="first").drop(columns=["food_norm"])
 
 st.sidebar.markdown(
 """
@@ -930,7 +933,13 @@ with st.sidebar:
                     try:
                         append_user_food(row, update_if_exists=False)
                         st.success("Added new food.")
-                        st.rerun()
+                        
+                        # Optimistic update for immediate availability
+                        live_df = st.session_state.get("user_foods_live", pd.DataFrame())
+                        st.session_state.user_foods_live = pd.concat([live_df, pd.DataFrame([row])], ignore_index=True)
+                        
+                        # Instead of st.rerun(), just continue. The dropdown will update on the next interaction.
+                        st.info("Food is now available in the list.")
                     except Exception as e:
                         st.error(str(e))
                 else:
@@ -957,7 +966,17 @@ with st.sidebar:
             with colU:
                 if st.button("✅ Update existing food", key="confirm_update_food"):
                     try:
-                        append_user_food(st.session_state.pending_food_update, update_if_exists=True)
+                        pending = st.session_state.pending_food_update
+                        
+                        append_user_food(pending, update_if_exists=True)
+                        # Update session live_df immediately
+                        live_df = st.session_state.get("user_foods_live", pd.DataFrame())
+                        if not live_df.empty and "food" in live_df.columns:
+                            live_df["food_norm"] = live_df["food"].apply(norm_food_name)
+                            pending_norm = norm_food_name(pending["food"])
+                            live_df = live_df[live_df["food_norm"] != pending_norm].drop(columns=["food_norm"], errors="ignore")
+                        
+                        st.session_state.user_foods_live = pd.concat([live_df, pd.DataFrame([pending])], ignore_index=True)
                         st.success("Food updated.")
                         st.session_state.pending_food_update = None
                         st.session_state.pending_food_changed_fields = None
