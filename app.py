@@ -3,24 +3,67 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import difflib
+import base64
+import json
+import requests
 
 st.set_page_config(page_title="Macro Satiety Optimizer (MVP)", layout="centered")
 
 import json
 from pathlib import Path
 
-MEALS_PATH = Path("meals.json")
+# ----------------------------
+# GitHub-backed persistence
+# ----------------------------
+def _gh_headers():
+    return {
+        "Authorization": f"Bearer {st.secrets['GITHUB_TOKEN']}",
+        "Accept": "application/vnd.github+json",
+    }
+
+def gh_get_file(path: str) -> tuple[str | None, str | None]:
+    """Return (content_text, sha). If file doesn't exist, returns (None, None)."""
+    owner = st.secrets["GITHUB_OWNER"]
+    repo = st.secrets["GITHUB_REPO"]
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+    r = requests.get(url, headers=_gh_headers(), timeout=20)
+    if r.status_code == 404:
+        return None, None
+    r.raise_for_status()
+    data = r.json()
+    content = base64.b64decode(data["content"]).decode("utf-8")
+    return content, data["sha"]
+
+def gh_put_file(path: str, content_text: str, message: str, sha: str | None = None) -> None:
+    owner = st.secrets["GITHUB_OWNER"]
+    repo = st.secrets["GITHUB_REPO"]
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+
+    payload = {
+        "message": message,
+        "content": base64.b64encode(content_text.encode("utf-8")).decode("utf-8"),
+    }
+    if sha:
+        payload["sha"] = sha
+
+    r = requests.put(url, headers=_gh_headers(), json=payload, timeout=20)
+    r.raise_for_status()
+
+MEALS_GH_PATH = "data/meals.json"
 
 def load_meals() -> dict:
-    if not MEALS_PATH.exists():
+    txt, _ = gh_get_file(MEALS_GH_PATH)
+    if not txt:
         return {}
     try:
-        return json.loads(MEALS_PATH.read_text(encoding="utf-8"))
+        return json.loads(txt)
     except Exception:
         return {}
 
 def save_meals(meals: dict) -> None:
-    MEALS_PATH.write_text(json.dumps(meals, indent=2), encoding="utf-8")
+    _, sha = gh_get_file(MEALS_GH_PATH)
+    new_txt = json.dumps(meals, indent=2)
+    gh_put_file(MEALS_GH_PATH, new_txt, "Update meals", sha=sha)
 
 def require_password():
     password = st.secrets.get("APP_PASSWORD")
@@ -103,44 +146,70 @@ def norm_food_name(s: str) -> str:
 # ----------------------------
 # User foods
 # ----------------------------
-USER_FOODS_PATH = Path("user_foods.csv")
+USER_FOODS_GH_PATH = "data/user_foods.csv"
 
-def ensure_user_foods_file():
-    if not USER_FOODS_PATH.exists():
-        cols = [
-            "food","category","swap_group","typical_serving_g","kcal_per_serving",
-            "kcal_per_100g","protein_per_100g","carbs_per_100g","fat_per_100g","fibre_per_100g"
-        ]
-        pd.DataFrame(columns=cols).to_csv(USER_FOODS_PATH, index=False)
+def _user_foods_empty_df() -> pd.DataFrame:
+    cols = [
+        "food","category","swap_group","typical_serving_g","kcal_per_serving",
+        "kcal_per_100g","protein_per_100g","carbs_per_100g","fat_per_100g","fibre_per_100g",
+        "unit_label"
+    ]
+    return pd.DataFrame(columns=cols)
 
 @st.cache_data
 def load_user_foods() -> pd.DataFrame:
-    ensure_user_foods_file()
-    df = pd.read_csv(USER_FOODS_PATH)
-    if df.empty:
-        return df
+    txt, _ = gh_get_file(USER_FOODS_GH_PATH)
+    if not txt:
+        return _user_foods_empty_df()
 
+    df = pd.read_csv(pd.io.common.StringIO(txt))
+
+    # Coerce numerics safely
     num_cols = [
         "typical_serving_g","kcal_per_serving","kcal_per_100g",
         "protein_per_100g","carbs_per_100g","fat_per_100g","fibre_per_100g"
     ]
     for c in num_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    if "unit_label" not in df.columns:
+        df["unit_label"] = ""
+
+    # Fill kcal_per_serving if missing
+    if "kcal_per_serving" not in df.columns:
+        df["kcal_per_serving"] = np.nan
 
     need = df["kcal_per_serving"].isna()
-    df.loc[need, "kcal_per_serving"] = df.loc[need, "kcal_per_100g"] * df.loc[need, "typical_serving_g"] / 100.0
+    if "kcal_per_100g" in df.columns and "typical_serving_g" in df.columns:
+        df.loc[need, "kcal_per_serving"] = df.loc[need, "kcal_per_100g"] * df.loc[need, "typical_serving_g"] / 100.0
+
     return df
 
 def append_user_food(row: dict):
-    ensure_user_foods_file()
-    df = pd.read_csv(USER_FOODS_PATH)
+    # Load current CSV from GitHub
+    txt, sha = gh_get_file(USER_FOODS_GH_PATH)
 
-    if not df.empty and df["food"].str.lower().eq(row["food"].strip().lower()).any():
+    if txt:
+        df = pd.read_csv(pd.io.common.StringIO(txt))
+    else:
+        df = _user_foods_empty_df()
+
+    if "unit_label" not in df.columns:
+        df["unit_label"] = ""
+
+    # Prevent duplicates (case-insensitive, whitespace-normalised)
+    def _norm(s): return " ".join(str(s).strip().lower().split())
+    if not df.empty and df["food"].apply(_norm).eq(_norm(row["food"])).any():
         raise ValueError("That food already exists in your user list.")
 
     df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
-    df.to_csv(USER_FOODS_PATH, index=False)
 
+    # Save back to GitHub
+    out = df.to_csv(index=False)
+    gh_put_file(USER_FOODS_GH_PATH, out, "Update user foods", sha=sha)
+
+    # Clear cache so new food appears immediately
     load_user_foods.clear()
 
 
