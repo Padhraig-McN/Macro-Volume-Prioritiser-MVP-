@@ -156,7 +156,6 @@ def _user_foods_empty_df() -> pd.DataFrame:
     ]
     return pd.DataFrame(columns=cols)
 
-@st.cache_data
 def load_user_foods() -> pd.DataFrame:
     txt, _ = gh_get_file(USER_FOODS_GH_PATH)
     if not txt:
