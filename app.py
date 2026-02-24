@@ -186,7 +186,7 @@ def load_user_foods() -> pd.DataFrame:
 
     return df
 
-def append_user_food(row: dict):
+def append_user_food(row: dict, update_if_exists: bool = False):
     # Load current CSV from GitHub
     txt, sha = gh_get_file(USER_FOODS_GH_PATH)
 
@@ -198,18 +198,55 @@ def append_user_food(row: dict):
     if "unit_label" not in df.columns:
         df["unit_label"] = ""
 
-    # Prevent duplicates (case-insensitive, whitespace-normalised)
-    def _norm(s): return " ".join(str(s).strip().lower().split())
-    if not df.empty and df["food"].apply(_norm).eq(_norm(row["food"])).any():
-        raise ValueError("That food already exists in your user list.")
+    def _norm(s): 
+        return " ".join(str(s).strip().lower().split())
 
-    df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+    row_food_norm = _norm(row["food"])
+    if df.empty:
+        idx = None
+    else:
+        matches = df["food"].apply(_norm) == row_food_norm
+        idx = df.index[matches].tolist()
+        idx = idx[0] if idx else None
+
+    # If exists
+    if idx is not None:
+        if not update_if_exists:
+            raise ValueError("That food already exists in your user list.")
+
+        # Detect whether anything is actually different
+        def _as_str(x):
+            return "" if pd.isna(x) else str(x)
+
+        changed_fields = []
+        for k, v in row.items():
+            if k not in df.columns:
+                continue
+            old = df.at[idx, k]
+            if _as_str(old) != _as_str(v):
+                changed_fields.append(k)
+
+        if not changed_fields:
+            # Nothing to update; still clear cache so UI is consistent
+            load_user_foods.clear()
+            return
+
+        # Overwrite the row
+        for k, v in row.items():
+            if k in df.columns:
+                df.at[idx, k] = v
+
+        msg = f"Update user food: {row['food']} ({', '.join(changed_fields)})"
+    else:
+        # Append new row
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        msg = f"Add user food: {row['food']}"
 
     # Save back to GitHub
     out = df.to_csv(index=False)
-    gh_put_file(USER_FOODS_GH_PATH, out, "Update user foods", sha=sha)
+    gh_put_file(USER_FOODS_GH_PATH, out, msg, sha=sha)
 
-    # Clear cache so new food appears immediately
+    # Clear cache so new/updated food appears immediately
     load_user_foods.clear()
 
 
@@ -870,8 +907,14 @@ with st.sidebar:
                     "fibre_per_100g": float(fib100),
                 }
                 try:
-                    append_user_food(row)
+                    append_user_food(row, update_if_exists=update_if_exists)
                     st.success("Saved! Restarting data cache so it appears in the food list.")
                     st.rerun()
                 except Exception as e:
                     st.error(str(e))
+
+update_if_exists = st.checkbox(
+    "Update existing food if name matches",
+    value=True,
+    help="If the food already exists in your user list, overwrite it with the new values."
+)
