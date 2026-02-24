@@ -870,6 +870,12 @@ with st.sidebar:
     with st.expander("➕ Add a new food to the database"):
         st.write("Add a food if it isn't in the list. Use per-100g values where possible.")
 
+        update_if_exists = st.checkbox(
+            "Update existing food if name matches",
+            value=True,
+            help="If the food already exists in your user list, overwrite it with the new values."
+        )
+
         new_food = st.text_input("Food name")
         new_category = st.selectbox("Category", ["veg","fruit","dairy","meat","fish","fat","carb","snack","supplement","other"])
         new_group = st.selectbox(
@@ -905,16 +911,11 @@ with st.sidebar:
                     "carbs_per_100g": float(c100),
                     "fat_per_100g": float(f100),
                     "fibre_per_100g": float(fib100),
+                    "unit_label": "",  # keep column consistent
                 }
                 try:
                     append_user_food(row, update_if_exists=update_if_exists)
-                    st.success("Saved! Restarting data cache so it appears in the food list.")
+                    st.success("Saved. Refreshing…")
                     st.rerun()
                 except Exception as e:
                     st.error(str(e))
-
-update_if_exists = st.checkbox(
-    "Update existing food if name matches",
-    value=True,
-    help="If the food already exists in your user list, overwrite it with the new values."
-)
