@@ -1,0 +1,29 @@
+{
+  "Breakfast": [
+    {
+      "food": "Skyr 0%",
+      "amount": 175.0,
+      "unit": "servings"
+    },
+    {
+      "food": "Peanut butter",
+      "amount": 40.0,
+      "unit": "grams"
+    },
+    {
+      "food": "Berries",
+      "amount": 150.0,
+      "unit": "grams"
+    },
+    {
+      "food": "Oats",
+      "amount": 60.0,
+      "unit": "grams"
+    },
+    {
+      "food": "Beef Isolate Protein Powder (Pineapple and Grapefruit)",
+      "amount": 30.0,
+      "unit": "grams"
+    }
+  ]
+}
