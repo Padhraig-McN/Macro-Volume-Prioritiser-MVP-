@@ -1,2 +1,3 @@
 food,category,swap_group,typical_serving_g,kcal_per_serving,kcal_per_100g,protein_per_100g,carbs_per_100g,fat_per_100g,fibre_per_100g,unit_label
 Honey,carb,carb_starchy,10.0,33.4,334.0,0.2,81.2,0.9,0.0,
+Beef Isolate Protein Powder (Pineapple and Grapefruit),supplement,protein_supplement,30.0,110.1,367.0,90.0,0.9,0.0,0.0,
