@@ -9,9 +9,6 @@ import requests
 
 st.set_page_config(page_title="Macro Satiety Optimizer (MVP)", layout="centered")
 
-import json
-from pathlib import Path
-
 # ----------------------------
 # GitHub-backed persistence
 # ----------------------------
@@ -226,8 +223,7 @@ def append_user_food(row: dict, update_if_exists: bool = False):
                 changed_fields.append(k)
 
         if not changed_fields:
-            # Nothing to update; still clear cache so UI is consistent
-            load_user_foods.clear()
+            
             return
 
         # Overwrite the row
@@ -244,9 +240,6 @@ def append_user_food(row: dict, update_if_exists: bool = False):
     # Save back to GitHub
     out = df.to_csv(index=False)
     gh_put_file(USER_FOODS_GH_PATH, out, msg, sha=sha)
-
-    # Clear cache so new/updated food appears immediately
-    load_user_foods.clear()
 
 def find_existing_food(df: pd.DataFrame, food_name: str):
     def _norm(s): return " ".join(str(s).strip().lower().split())
