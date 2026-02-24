@@ -249,7 +249,25 @@ def append_user_food(row: dict, update_if_exists: bool = False):
     # Clear cache so new/updated food appears immediately
     load_user_foods.clear()
 
+def find_existing_food(df: pd.DataFrame, food_name: str):
+    def _norm(s): return " ".join(str(s).strip().lower().split())
+    target = _norm(food_name)
+    if df.empty or "food" not in df.columns:
+        return None
+    matches = df["food"].apply(_norm) == target
+    idxs = df.index[matches].tolist()
+    return idxs[0] if idxs else None
 
+def diff_food_rows(old_row: dict, new_row: dict) -> list[str]:
+    changed = []
+    for k, v in new_row.items():
+        if k not in old_row:
+            continue
+        old = old_row.get(k)
+        # compare as strings to avoid float formatting pain
+        if ("" if pd.isna(old) else str(old)) != ("" if pd.isna(v) else str(v)):
+            changed.append(k)
+    return changed
 # ----------------------------
 # Core calculations
 # ----------------------------
@@ -870,12 +888,6 @@ with st.sidebar:
     with st.expander("➕ Add a new food to the database"):
         st.write("Add a food if it isn't in the list. Use per-100g values where possible.")
 
-        update_if_exists = st.checkbox(
-            "Update existing food if name matches",
-            value=True,
-            help="If the food already exists in your user list, overwrite it with the new values."
-        )
-
         new_food = st.text_input("Food name")
         new_category = st.selectbox("Category", ["veg","fruit","dairy","meat","fish","fat","carb","snack","supplement","other"])
         new_group = st.selectbox(
@@ -893,29 +905,78 @@ with st.sidebar:
         f100 = st.number_input("fat per 100g (g)", min_value=0.0, value=3.0, step=0.1)
         fib100 = st.number_input("fibre per 100g (g)", min_value=0.0, value=1.0, step=0.1)
 
+        # --- Build row dict once ---
+        row = None
+        if new_food.strip() and kcal100 > 0:
+            kcal_serv = kcal100 * typical_serving / 100.0
+            row = {
+                "food": new_food.strip(),
+                "category": new_category,
+                "swap_group": new_group,
+                "typical_serving_g": float(typical_serving),
+                "kcal_per_serving": float(kcal_serv),
+                "kcal_per_100g": float(kcal100),
+                "protein_per_100g": float(p100),
+                "carbs_per_100g": float(c100),
+                "fat_per_100g": float(f100),
+                "fibre_per_100g": float(fib100),
+                "unit_label": "",
+            }
+
+        # --- Save button ---
         if st.button("Save food"):
             if not new_food.strip():
                 st.error("Please enter a food name.")
             elif kcal100 <= 0:
                 st.error("kcal per 100g must be greater than 0.")
             else:
-                kcal_serv = kcal100 * typical_serving / 100.0
-                row = {
-                    "food": new_food.strip(),
-                    "category": new_category,
-                    "swap_group": new_group,
-                    "typical_serving_g": float(typical_serving),
-                    "kcal_per_serving": float(kcal_serv),
-                    "kcal_per_100g": float(kcal100),
-                    "protein_per_100g": float(p100),
-                    "carbs_per_100g": float(c100),
-                    "fat_per_100g": float(f100),
-                    "fibre_per_100g": float(fib100),
-                    "unit_label": "",  # keep column consistent
-                }
-                try:
-                    append_user_food(row, update_if_exists=update_if_exists)
-                    st.success("Saved. Refreshing…")
-                    st.rerun()
-                except Exception as e:
-                    st.error(str(e))
+                uf = load_user_foods()
+                idx = find_existing_food(uf, row["food"])
+
+                if idx is None:
+                    # Add new
+                    try:
+                        append_user_food(row, update_if_exists=False)
+                        st.success("Added new food.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+                else:
+                    # Exists -> check diff then prompt
+                    old = uf.loc[idx].to_dict()
+                    changed = diff_food_rows(old, row)
+
+                    if not changed:
+                        st.info("That food already exists and the values are identical. Nothing to update.")
+                    else:
+                        st.session_state.pending_food_update = row
+                        st.session_state.pending_food_changed_fields = changed
+                        st.session_state.pending_food_name = row["food"]
+
+        # --- Prompt to update (keep INSIDE expander) ---
+        if st.session_state.get("pending_food_update"):
+            name = st.session_state.get("pending_food_name", "this food")
+            fields = st.session_state.get("pending_food_changed_fields", [])
+
+            st.warning(f"'{name}' already exists. Update it with the new values?")
+            st.write("Fields that will change:", ", ".join(fields))
+
+            colU, colC = st.columns(2)
+            with colU:
+                if st.button("✅ Update existing food", key="confirm_update_food"):
+                    try:
+                        append_user_food(st.session_state.pending_food_update, update_if_exists=True)
+                        st.success("Food updated.")
+                        st.session_state.pending_food_update = None
+                        st.session_state.pending_food_changed_fields = None
+                        st.session_state.pending_food_name = None
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+
+            with colC:
+                if st.button("Cancel", key="cancel_update_food"):
+                    st.session_state.pending_food_update = None
+                    st.session_state.pending_food_changed_fields = None
+                    st.session_state.pending_food_name = None
+                    st.info("Update cancelled.")
